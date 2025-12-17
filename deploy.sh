@@ -35,59 +35,71 @@ format_value() {
     local value="$1"
     
     # Boolean (unquoted)
-    if [[ "$value" == "true" ]] || [[ "$value" == "false" ]]; then
+    if [[ "$value" =~ ^(true|false)$ ]]; then
         echo "$value"
         return
     fi
     
-    # Number (unquoted)
-    if [[ "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    # Number (unquoted) - supports integers and floats, including negatives
+    if [[ "$value" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
         echo "$value"
         return
     fi
     
-    # JSON array or object (unquoted)
+    # JSON array or object (preserve as-is)
     if [[ "$value" =~ ^\[.*\]$ ]] || [[ "$value" =~ ^\{.*\}$ ]]; then
         echo "$value"
         return
     fi
     
-    # String (quoted)
+    # String (quoted and escaped)
+    value="${value//\"/\\\"}"
     echo "\"$value\""
 }
 
-# Perform variable substitution
+# Perform variable substitution using [[VAR_NAME]] pattern
 echo "[INFO] Performing variable substitution..."
-cp "$VARS_FILE" "$VARS_FILE_TMP"
 
-# Find all ENV_ placeholders and substitute them (excluding comments)
-PLACEHOLDERS=$(grep -v '^\s*#' "$VARS_FILE" | grep -oP 'ENV_[A-Z0-9_]+' | sort -u || true)
+# Create a temporary file for substitution
+TEMP_FILE=$(mktemp)
+trap "rm -f $TEMP_FILE" EXIT
 
-if [[ -z "$PLACEHOLDERS" ]]; then
-    echo "[INFO] No ENV_ placeholders found in variables file"
-else
-    for placeholder in $PLACEHOLDERS; do
-        var_name="$placeholder"
+# Process file line by line
+while IFS= read -r line; do
+    # Skip comments and empty lines (no substitution needed)
+    if [[ -z "$line" ]] || [[ "$line" =~ ^[[:space:]]*# ]]; then
+        echo "$line" >> "$TEMP_FILE"
+        continue
+    fi
+    
+    processed_line="$line"
+    
+    # Find and replace all [[VAR]] patterns
+    while [[ "$processed_line" =~ \[\[([A-Z_][A-Z0-9_]*)\]\] ]]; do
+        var_name="${BASH_REMATCH[1]}"
         var_value="${!var_name}"
         
         if [[ -z "$var_value" ]]; then
-            echo "[WARN] Variable $var_name is not set, using 'undefined'" >&2
-            var_value="undefined"
+            echo "[WARNING] Variable $var_name is not set - using \"undefined\"" >&2
+            formatted_value="\"undefined\""
+        else
+            formatted_value=$(format_value "$var_value")
         fi
         
-        formatted_value=$(format_value "$var_value")
-        
-        # Escape forward slashes and special characters for sed
+        # Escape special characters for sed
         escaped_value=$(echo "$formatted_value" | sed 's/[\/&]/\\&/g')
         
-        # Replace placeholder with value
-        # Use word boundaries to avoid replacing parts of strings
-        # Also handle both quoted and unquoted placeholders
-        sed -i "s/\"${placeholder}\"/${escaped_value}/g; s/\b${placeholder}\b/${escaped_value}/g" "$VARS_FILE_TMP"
+        # Replace the placeholder
+        processed_line=$(echo "$processed_line" | sed "s/\[\[${var_name}\]\]/${escaped_value}/g")
         
         echo "[INFO] Substituted $var_name = $formatted_value"
     done
-fi
+    
+    echo "$processed_line" >> "$TEMP_FILE"
+done < "$VARS_FILE"
+
+# Move the processed file to the tmp location
+mv "$TEMP_FILE" "$VARS_FILE_TMP"
 
 # Perform the requested action
 case "$ACTION" in

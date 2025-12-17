@@ -26,9 +26,9 @@ A reusable GitHub Action for deploying Nomad jobs via SSH with automatic environ
     hcl-variables: nomad/variables/my-service.vars.hcl
     action: run
     env-vars: |
-      ENV_DATACENTER: dc1
-      ENV_SERVICE_COUNT: 3
-      ENV_SERVICE_HOST: my-service.example.com
+      DATACENTER: dc1
+      SERVICE_COUNT: 3
+      SERVICE_HOST: my-service.example.com
 ```
 
 ### Basic Example (JSON format - also supported)
@@ -46,9 +46,9 @@ A reusable GitHub Action for deploying Nomad jobs via SSH with automatic environ
     action: run
     env-vars: |
       {
-        "ENV_DATACENTER": "dc1",
-        "ENV_SERVICE_COUNT": "3",
-        "ENV_SERVICE_HOST": "my-service.example.com"
+        "DATACENTER": "dc1",
+        "SERVICE_COUNT": "3",
+        "SERVICE_HOST": "my-service.example.com"
       }
 ```
 
@@ -74,10 +74,10 @@ A reusable GitHub Action for deploying Nomad jobs via SSH with automatic environ
     
     # Environment Variables (Required - YAML or JSON format)
     env-vars: |
-      ENV_DATACENTER: ${{ vars.DATACENTER }}
-      ENV_SERVICE_IMAGE: ${{ vars.SERVICE_IMAGE }}
-      ENV_SERVICE_COUNT: ${{ vars.SERVICE_COUNT }}
-      ENV_API_KEY: ${{ secrets.API_KEY }}
+      DATACENTER: ${{ vars.DATACENTER }}
+      SERVICE_IMAGE: ${{ vars.SERVICE_IMAGE }}
+      SERVICE_COUNT: ${{ vars.SERVICE_COUNT }}
+      API_KEY: ${{ secrets.API_KEY }}
     
     # Optional Settings
     verify-deployment: 'true'
@@ -116,41 +116,43 @@ A reusable GitHub Action for deploying Nomad jobs via SSH with automatic environ
 
 ## Environment Variable Substitution
 
-The action automatically substitutes environment variables in your HCL variable files:
+The action automatically substitutes environment variables in your HCL variable files using the `[[VAR_NAME]]` pattern:
 
 ### Variable File (variables.vars.hcl)
 ```hcl
-datacenters = ["ENV_DATACENTER"]
-service_image = "ENV_SERVICE_IMAGE"
-service_count = ENV_SERVICE_COUNT
+datacenters = [[DATACENTER]]
+service_image = [[SERVICE_IMAGE]]
+service_count = [[SERVICE_COUNT]]
 service_cpu = 100
 ```
 
 ### GitHub Actions Workflow (YAML format)
 ```yaml
 env-vars: |
-  ENV_DATACENTER: dc1
-  ENV_SERVICE_IMAGE: myapp:latest
-  ENV_SERVICE_COUNT: 3
+  DATACENTER: dc1
+  SERVICE_IMAGE: myapp:latest
+  SERVICE_COUNT: 3
 ```
 
 Or JSON format:
 ```yaml
 env-vars: |
   {
-    "ENV_DATACENTER": "dc1",
-    "ENV_SERVICE_IMAGE": "myapp:latest",
-    "ENV_SERVICE_COUNT": "3"
+    "DATACENTER": "dc1",
+    "SERVICE_IMAGE": "myapp:latest",
+    "SERVICE_COUNT": "3"
   }
 ```
 
 ### Result After Substitution
 ```hcl
-datacenters = ["dc1"]
+datacenters = "dc1"
 service_image = "myapp:latest"
 service_count = 3
 service_cpu = 100
 ```
+
+**Note:** Variable names must start with a letter or underscore, followed by letters, numbers, or underscores (`[A-Z_][A-Z0-9_]*`).
 
 ## Environment Variable Formats
 
@@ -160,10 +162,10 @@ YAML format is cleaner and more readable:
 
 ```yaml
 env-vars: |
-  ENV_DATACENTER: dc1
-  ENV_SERVICE_COUNT: 3
-  ENV_DEBUG: true
-  ENV_HOST: my-service.example.com
+  DATACENTER: dc1
+  SERVICE_COUNT: 3
+  DEBUG: true
+  HOST: my-service.example.com
 ```
 
 **Benefits:**
@@ -179,10 +181,10 @@ JSON format works but is more verbose:
 ```yaml
 env-vars: |
   {
-    "ENV_DATACENTER": "dc1",
-    "ENV_SERVICE_COUNT": "3",
-    "ENV_DEBUG": "true",
-    "ENV_HOST": "my-service.example.com"
+    "DATACENTER": "dc1",
+    "SERVICE_COUNT": "3",
+    "DEBUG": "true",
+    "HOST": "my-service.example.com"
   }
 ```
 
@@ -232,7 +234,7 @@ action: status
 
 1. **Setup SSH**: Configures SSH authentication with the provided key
 2. **Sync Files**: Transfers HCL template and variables file to remote host with service-specific names (e.g., `my-service.template.hcl`, `my-service.variables.hcl`)
-3. **Variable Substitution**: Replaces `ENV_*` placeholders with actual values from `env-vars`
+3. **Variable Substitution**: Replaces `[[VAR_NAME]]` placeholders with actual values from `env-vars`, with intelligent type detection (strings are quoted, numbers/booleans/arrays are not)
 4. **Execute Action**: Runs the Nomad command (run, stop, restart, or status)
 5. **Verify**: Checks job status if `verify-deployment` is enabled (only for `run` action)
 

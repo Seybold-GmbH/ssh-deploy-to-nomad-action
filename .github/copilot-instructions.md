@@ -12,7 +12,7 @@ This is a **composite GitHub Action** that deploys HashiCorp Nomad jobs via SSH 
    - YAML/JSON env-vars parsing and conversion
    
 2. **Remote Phase** (`deploy.sh`): Executes on SSH host
-   - Variable substitution in HCL files (replaces `ENV_*` placeholders)
+   - Variable substitution in HCL files (replaces `[[VAR_NAME]]` placeholders)
    - Nomad CLI commands (`run`, `stop`, `restart`, `status`)
    - Type-aware value formatting (strings quoted, numbers/bools/arrays unquoted)
 
@@ -25,7 +25,8 @@ Files are prefixed with sanitized service names to enable concurrent deployments
 ## Critical Patterns
 
 ### Variable Substitution Logic (`deploy.sh`)
-- Scans `.vars.hcl` for `ENV_[A-Z0-9_]+` placeholders (ignores comments)
+- Scans `.vars.hcl` line-by-line for `[[VAR_NAME]]` placeholders (pattern: `\[\[([A-Z_][A-Z0-9_]*)\]\]`)
+- Ignores comments and empty lines
 - Type detection determines quoting:
   ```bash
   # Booleans/numbers/JSON: unquoted
@@ -33,11 +34,12 @@ Files are prefixed with sanitized service names to enable concurrent deployments
   count = 3
   tags = ["web", "api"]
   
-  # Strings: quoted
+  # Strings: quoted and escaped
   image = "nginx:latest"
+  api_key = "secret\"with\"quotes"
   ```
-- Uses word boundaries (`\b`) in sed to avoid partial matches
-- Creates `.tmp` file for substitution, cleans up afterward
+- Processes file line by line, replacing all `[[VAR]]` patterns on each line
+- Creates temporary file for substitution, cleans up via trap on exit
 
 ### Dual Format Support (YAML/JSON)
 Action detects format by checking if `env-vars` starts with `{`:
@@ -48,8 +50,8 @@ Action detects format by checking if `env-vars` starts with `{`:
 Example YAML input:
 ```yaml
 env-vars: |
-  ENV_SERVICE_COUNT: 3
-  ENV_DEBUG: true
+  SERVICE_COUNT: 3
+  DEBUG: true
 ```
 
 ### SSH Key Handling
@@ -108,12 +110,14 @@ else
 fi
 ```
 
-### Custom Variable Prefixes
-Change regex in `deploy.sh`:
+### Custom Variable Patterns
+Change regex in `deploy.sh` if you need a different placeholder pattern:
 ```bash
-# From: ENV_[A-Z0-9_]+
-# To:   MYAPP_[A-Z0-9_]+
-PLACEHOLDERS=$(grep -oP 'MYAPP_[A-Z0-9_]+' "$VARS_FILE" | sort -u)
+# Current: [[VAR_NAME]]
+# Alternative: {{VAR_NAME}}
+while [[ "$processed_line" =~ \{\{([A-Z_][A-Z0-9_]*)\}\} ]]; do
+    # ... substitution logic
+done
 ```
 
 ## Key Files
@@ -121,7 +125,7 @@ PLACEHOLDERS=$(grep -oP 'MYAPP_[A-Z0-9_]+' "$VARS_FILE" | sort -u)
 - `action.yml`: Composite action definition, all GitHub Actions integration
 - `deploy.sh`: Core deployment logic, variable substitution engine
 - `test/template.nomad.hcl`: Example Nomad job spec using variables
-- `test/variables.vars.hcl`: Example showing `ENV_*` placeholder usage
+- `test/variables.vars.hcl`: Example showing `[[VAR]]` placeholder usage
 
 ## Dependencies
 
