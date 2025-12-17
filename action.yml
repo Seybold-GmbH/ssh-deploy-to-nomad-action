@@ -1,0 +1,200 @@
+name: 'Deploy to Nomad via SSH'
+description: 'Deploys, stops, or restarts Nomad jobs via SSH with variable substitution'
+author: 'Seybold GmbH'
+
+inputs:
+  # SSH Connection
+  ssh-host:
+    description: 'SSH host to connect to'
+    required: true
+  ssh-user:
+    description: 'SSH user for authentication'
+    required: true
+  ssh-key:
+    description: 'SSH private key for authentication (plain text or base64 encoded)'
+    required: true
+  
+  # Nomad Configuration
+  nomad-addr:
+    description: 'Nomad server address'
+    required: false
+    default: 'http://127.0.0.1:4646'
+  
+  # Deployment Configuration
+  action:
+    description: 'Action to perform (run, stop, restart, status)'
+    required: true
+    default: 'run'
+  service-name:
+    description: 'Name of the service/job to deploy'
+    required: true
+  hcl-template:
+    description: 'Path to HCL template file (relative to repository root)'
+    required: true
+  hcl-variables:
+    description: 'Path to HCL variables file (relative to repository root)'
+    required: true
+  
+  # Environment Variables (YAML or JSON format)
+  env-vars:
+    description: 'Environment variables for variable substitution (YAML dict or JSON object)'
+    required: true
+  
+  # Optional Settings
+  verify-deployment:
+    description: 'Whether to verify deployment after running'
+    required: false
+    default: 'true'
+  workspace-path:
+    description: 'Remote workspace path on SSH host'
+    required: false
+    default: '~/nomad-deploy'
+
+outputs:
+  deployment-status:
+    description: 'Status of the deployment'
+    value: ${{ steps.deploy.outputs.status }}
+  job-status:
+    description: 'Nomad job status output'
+    value: ${{ steps.verify.outputs.job-status }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup SSH
+      shell: bash
+      env:
+        SSH_PRIVATE_KEY: ${{ inputs.ssh-key }}
+        SSH_HOST: ${{ inputs.ssh-host }}
+      run: |
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        
+        # Handle both plain and base64-encoded keys
+        if echo "$SSH_PRIVATE_KEY" | grep -q "BEGIN.*PRIVATE KEY"; then
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+        else
+          echo "$SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/id_ed25519
+        fi
+        chmod 600 ~/.ssh/id_ed25519
+        
+        # Add host to known hosts
+        ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+        chmod 644 ~/.ssh/known_hosts
+        
+        echo "✅ SSH setup complete"
+
+    - name: Sync deployment files to remote host
+      shell: bash
+      env:
+        SSH_HOST: ${{ inputs.ssh-host }}
+        SSH_USER: ${{ inputs.ssh-user }}
+        WORKSPACE_PATH: ${{ inputs.workspace-path }}
+        SERVICE_NAME: ${{ inputs.service-name }}
+        HCL_TEMPLATE: ${{ inputs.hcl-template }}
+        HCL_VARIABLES: ${{ inputs.hcl-variables }}
+      run: |
+        # Sanitize service name for filename (replace non-alphanumeric with dash)
+        SAFE_NAME=$(echo "${SERVICE_NAME}" | sed 's/[^a-zA-Z0-9_-]/-/g')
+        
+        # Create remote workspace
+        ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
+          ${SSH_USER}@${SSH_HOST} "mkdir -p ${WORKSPACE_PATH}"
+        
+        # Sync required files with service-specific names
+        rsync -avz -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no" \
+          ${HCL_TEMPLATE} ${SSH_USER}@${SSH_HOST}:${WORKSPACE_PATH}/${SAFE_NAME}.template.hcl
+        
+        rsync -avz -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no" \
+          ${HCL_VARIABLES} ${SSH_USER}@${SSH_HOST}:${WORKSPACE_PATH}/${SAFE_NAME}.variables.hcl
+        
+        # Sync substitution script
+        rsync -avz -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no" \
+          ${{ github.action_path }}/deploy.sh ${SSH_USER}@${SSH_HOST}:${WORKSPACE_PATH}/
+        
+        ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
+          ${SSH_USER}@${SSH_HOST} "chmod +x ${WORKSPACE_PATH}/deploy.sh"
+        
+        echo "✅ Files synced to remote host as ${SAFE_NAME}.template.hcl and ${SAFE_NAME}.variables.hcl"
+
+    - name: Deploy to Nomad via SSH
+      id: deploy
+      shell: bash
+      env:
+        SSH_HOST: ${{ inputs.ssh-host }}
+        SSH_USER: ${{ inputs.ssh-user }}
+        WORKSPACE_PATH: ${{ inputs.workspace-path }}
+        NOMAD_ADDR: ${{ inputs.nomad-addr }}
+        ACTION: ${{ inputs.action }}
+        SERVICE_NAME: ${{ inputs.service-name }}
+        ENV_VARS_INPUT: ${{ inputs.env-vars }}
+      run: |
+        echo "🚀 Performing action: ${ACTION} on service: ${SERVICE_NAME}"
+        
+        # Sanitize service name for filename
+        SAFE_NAME=$(echo "${SERVICE_NAME}" | sed 's/[^a-zA-Z0-9_-]/-/g')
+        
+        # Convert env vars to JSON (handles both YAML and JSON input)
+        # If input starts with '{', it's JSON; otherwise, convert YAML to JSON
+        if echo "$ENV_VARS_INPUT" | grep -q '^[[:space:]]*{'; then
+          # Already JSON
+          ENV_VARS_JSON="$ENV_VARS_INPUT"
+        else
+          # Convert YAML to JSON using yq (or python if yq not available)
+          if command -v yq &> /dev/null; then
+            ENV_VARS_JSON=$(echo "$ENV_VARS_INPUT" | yq -o=json '.')
+          else
+            # Fallback: use Python to convert YAML to JSON
+            ENV_VARS_JSON=$(python3 -c "import sys, yaml, json; print(json.dumps(yaml.safe_load(sys.stdin)))" <<< "$ENV_VARS_INPUT")
+          fi
+        fi
+        
+        # Convert JSON env vars to export statements
+        ENV_EXPORTS=$(echo "$ENV_VARS_JSON" | jq -r 'to_entries | map("export \(.key)=\"\(.value)\"") | join(" && ")')
+        
+        # Execute deployment with service-specific filenames
+        ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
+          ${SSH_USER}@${SSH_HOST} "cd ${WORKSPACE_PATH} && \
+          export NOMAD_ADDR='${NOMAD_ADDR}' && \
+          ${ENV_EXPORTS} && \
+          bash deploy.sh ${SERVICE_NAME} ${ACTION} ${SAFE_NAME}.template.hcl ${SAFE_NAME}.variables.hcl"
+        
+        if [ $? -eq 0 ]; then
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "✅ Deployment completed successfully"
+        else
+          echo "status=failed" >> $GITHUB_OUTPUT
+          echo "❌ Deployment failed"
+          exit 1
+        fi
+
+    - name: Verify deployment
+      id: verify
+      if: inputs.verify-deployment == 'true' && inputs.action == 'run'
+      shell: bash
+      env:
+        SSH_HOST: ${{ inputs.ssh-host }}
+        SSH_USER: ${{ inputs.ssh-user }}
+        NOMAD_ADDR: ${{ inputs.nomad-addr }}
+        SERVICE_NAME: ${{ inputs.service-name }}
+      run: |
+        echo "🔍 Verifying deployment status..."
+        
+        STATUS_OUTPUT=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no \
+          ${SSH_USER}@${SSH_HOST} "export NOMAD_ADDR='${NOMAD_ADDR}' && nomad job status ${SERVICE_NAME}")
+        
+        echo "$STATUS_OUTPUT"
+        echo "job-status<<EOF" >> $GITHUB_OUTPUT
+        echo "$STATUS_OUTPUT" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+        # Check if job is running
+        if echo "$STATUS_OUTPUT" | grep -q "Status.*=.*running"; then
+          echo "✅ Service is running"
+        else
+          echo "⚠️ Service may not be running properly"
+        fi
+
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'
