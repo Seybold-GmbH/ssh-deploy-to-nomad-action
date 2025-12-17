@@ -12,29 +12,29 @@ echo ""
 # Change to test directory
 cd "$(dirname "$0")"
 
-# Set up test environment variables
-export ENV_DATACENTERS='["dc1", "dc2"]'
-export ENV_SERVICE_NAME="test-app"
-export ENV_SERVICE_IMAGE="nginx:latest"
-export ENV_SERVICE_COUNT=3
-export ENV_SERVICE_CPU=500
-export ENV_SERVICE_MEMORY=256
-export ENV_ENVIRONMENT="production"
-export ENV_DEBUG_ENABLED=true
-export ENV_API_KEY="secret-key-12345"
-export ENV_SERVICE_TAGS='["web", "frontend", "public"]'
+# Set up test environment variables (without ENV_ prefix)
+export DATACENTERS='["dc1", "dc2"]'
+export SERVICE_NAME="test-app"
+export SERVICE_IMAGE="nginx:latest"
+export SERVICE_COUNT=3
+export SERVICE_CPU=500
+export SERVICE_MEMORY=256
+export ENVIRONMENT="production"
+export DEBUG_ENABLED=true
+export API_KEY="secret-key-12345"
+export SERVICE_TAGS='["web", "frontend", "public"]'
 
 echo "📋 Test Environment Variables:"
-echo "  ENV_DATACENTERS = $ENV_DATACENTERS"
-echo "  ENV_SERVICE_NAME = $ENV_SERVICE_NAME"
-echo "  ENV_SERVICE_IMAGE = $ENV_SERVICE_IMAGE"
-echo "  ENV_SERVICE_COUNT = $ENV_SERVICE_COUNT"
-echo "  ENV_SERVICE_CPU = $ENV_SERVICE_CPU"
-echo "  ENV_SERVICE_MEMORY = $ENV_SERVICE_MEMORY"
-echo "  ENV_ENVIRONMENT = $ENV_ENVIRONMENT"
-echo "  ENV_DEBUG_ENABLED = $ENV_DEBUG_ENABLED"
-echo "  ENV_API_KEY = $ENV_API_KEY"
-echo "  ENV_SERVICE_TAGS = $ENV_SERVICE_TAGS"
+echo "  DATACENTERS = $DATACENTERS"
+echo "  SERVICE_NAME = $SERVICE_NAME"
+echo "  SERVICE_IMAGE = $SERVICE_IMAGE"
+echo "  SERVICE_COUNT = $SERVICE_COUNT"
+echo "  SERVICE_CPU = $SERVICE_CPU"
+echo "  SERVICE_MEMORY = $SERVICE_MEMORY"
+echo "  ENVIRONMENT = $ENVIRONMENT"
+echo "  DEBUG_ENABLED = $DEBUG_ENABLED"
+echo "  API_KEY = $API_KEY"
+echo "  SERVICE_TAGS = $SERVICE_TAGS"
 echo ""
 
 # Copy deploy script to test directory
@@ -54,65 +54,69 @@ format_value() {
     local value="$1"
     
     # Boolean (unquoted)
-    if [[ "$value" == "true" ]] || [[ "$value" == "false" ]]; then
+    if [[ "$value" =~ ^(true|false)$ ]]; then
         echo "$value"
         return
     fi
     
-    # Number (unquoted)
-    if [[ "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    # Number (unquoted) - supports integers and floats, including negatives
+    if [[ "$value" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
         echo "$value"
         return
     fi
     
-    # JSON array or object (unquoted)
+    # JSON array or object (preserve as-is)
     if [[ "$value" =~ ^\[.*\]$ ]] || [[ "$value" =~ ^\{.*\}$ ]]; then
         echo "$value"
         return
     fi
     
-    # String (quoted)
+    # String (quoted and escaped)
+    value="${value//\"/\\\"}"
     echo "\"$value\""
 }
 
 # Perform variable substitution (same logic as deploy.sh)
-cp "$VARS_FILE" "$VARS_FILE_TMP"
+# Create a temporary file for substitution
+TEMP_FILE=$(mktemp)
+trap "rm -f $TEMP_FILE $VARS_FILE_TMP deploy.sh" EXIT
 
-PLACEHOLDERS=$(grep -v '^\s*#' "$VARS_FILE" | grep -oP 'ENV_[A-Z0-9_]+' | sort -u || true)
-
-if [[ -z "$PLACEHOLDERS" ]]; then
-    echo "❌ No ENV_ placeholders found in variables file"
-    exit 1
-else
-    echo "✅ Found placeholders to substitute:"
-    for placeholder in $PLACEHOLDERS; do
-        echo "   - $placeholder"
-    done
-    echo ""
+# Process file line by line
+while IFS= read -r line; do
+    # Skip comments and empty lines (no substitution needed)
+    if [[ -z "$line" ]] || [[ "$line" =~ ^[[:space:]]*# ]]; then
+        echo "$line" >> "$TEMP_FILE"
+        continue
+    fi
     
-    echo "🔄 Performing substitution..."
-    for placeholder in $PLACEHOLDERS; do
-        var_name="$placeholder"
+    processed_line="$line"
+    
+    # Find and replace all [[VAR]] patterns
+    while [[ "$processed_line" =~ \[\[([A-Z_][A-Z0-9_]*)\]\] ]]; do
+        var_name="${BASH_REMATCH[1]}"
         var_value="${!var_name}"
         
         if [[ -z "$var_value" ]]; then
-            echo "   ⚠️  $var_name is not set, using 'undefined'"
-            var_value="undefined"
+            echo "   ⚠️  Variable $var_name is not set - using \"undefined\""
+            formatted_value="\"undefined\""
+        else
+            formatted_value=$(format_value "$var_value")
         fi
         
-        formatted_value=$(format_value "$var_value")
-        
-        # Escape forward slashes and special characters for sed
+        # Escape special characters for sed
         escaped_value=$(echo "$formatted_value" | sed 's/[\/&]/\\&/g')
         
-        # Replace placeholder with value
-        # Use word boundaries to avoid replacing parts of strings
-        # Also handle both quoted and unquoted placeholders
-        sed -i "s/\"${placeholder}\"/${escaped_value}/g; s/\b${placeholder}\b/${escaped_value}/g" "$VARS_FILE_TMP"
+        # Replace the placeholder
+        processed_line=$(echo "$processed_line" | sed "s/\[\[${var_name}\]\]/${escaped_value}/g")
         
         echo "   ✓ $var_name = $formatted_value"
     done
-fi
+    
+    echo "$processed_line" >> "$TEMP_FILE"
+done < "$VARS_FILE"
+
+# Move the processed file to the tmp location
+mv "$TEMP_FILE" "$VARS_FILE_TMP"
 
 echo ""
 echo "========================================="
@@ -160,9 +164,9 @@ else
 fi
 
 # Test 5: Check if all placeholders are replaced (excluding comments)
-if grep -v '^\s*#' "$VARS_FILE_TMP" | grep -q 'ENV_'; then
-    echo "❌ Test 5: FAILED - Some ENV_ placeholders remain"
-    grep -v '^\s*#' "$VARS_FILE_TMP" | grep 'ENV_'
+if grep -v '^\s*#' "$VARS_FILE_TMP" | grep -q '\[\['; then
+    echo "❌ Test 5: FAILED - Some [[VAR]] placeholders remain"
+    grep -v '^\s*#' "$VARS_FILE_TMP" | grep '\[\['
 else
     echo "✅ Test 5: All placeholders replaced"
 fi
@@ -172,5 +176,4 @@ echo "========================================="
 echo "✅ Variable Substitution Test Complete!"
 echo "========================================="
 
-# Cleanup
-rm -f "$VARS_FILE_TMP" deploy.sh
+# Cleanup handled by trap

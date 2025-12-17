@@ -1,5 +1,5 @@
 # Variable definitions for test-service
-# These use ENV_ placeholders that will be substituted at deployment time
+# These use [[VAR]] placeholders that will be substituted at deployment time
 
 # String values (will be quoted)
 variable "service_name" {
@@ -45,14 +45,14 @@ variable "service_tags" {
   type = list(string)
 }
 
-# Variable assignments with ENV placeholders
-datacenters     = ENV_DATACENTERS
-service_name    = "ENV_SERVICE_NAME"
-service_image   = "ENV_SERVICE_IMAGE"
-service_count   = ENV_SERVICE_COUNT
-service_cpu     = ENV_SERVICE_CPU
-service_memory  = ENV_SERVICE_MEMORY
-environment     = "ENV_ENVIRONMENT"
-debug_enabled   = ENV_DEBUG_ENABLED
-api_key         = "ENV_API_KEY"
-service_tags    = ENV_SERVICE_TAGS
+# Variable assignments with [[VAR]] placeholders
+datacenters     = [[DATACENTERS]]
+service_name    = [[SERVICE_NAME]]
+service_image   = [[SERVICE_IMAGE]]
+service_count   = [[SERVICE_COUNT]]
+service_cpu     = [[SERVICE_CPU]]
+service_memory  = [[SERVICE_MEMORY]]
+environment     = [[ENVIRONMENT]]
+debug_enabled   = [[DEBUG_ENABLED]]
+api_key         = [[API_KEY]]
+service_tags    = [[SERVICE_TAGS]]
